@@ -1,12 +1,11 @@
 import streamlit as st
-import os
 from langchain_groq import ChatGroq
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain.chains import RetrievalQA
-from langchain.prompts import PromptTemplate
-from langchain.schema import Document
+from langchain_core.prompts import PromptTemplate
+from langchain_core.documents import Document
 
 # API Key — Streamlit Secrets-იდან
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
