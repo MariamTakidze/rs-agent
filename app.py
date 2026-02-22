@@ -3,9 +3,10 @@ from langchain_groq import ChatGroq
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain.chains import RetrievalQA
 from langchain_core.prompts import PromptTemplate
 from langchain_core.documents import Document
+from langchain_core.runnables import RunnablePassthrough
+from langchain_core.output_parsers import StrOutputParser
 
 # API Key — Streamlit Secrets-იდან
 GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
@@ -20,7 +21,7 @@ st.set_page_config(
 # 1. დოკუმენტები
 # ========================
 def load_local_documents():
-    docs = [
+    return [
         Document(
             page_content="დამატებული ღირებულების გადასახადის (დღგ) განაკვეთი საქართველოში შეადგენს 18 პროცენტს. დღგ-ის გადამხდელად რეგისტრაცია სავალდებულოა, თუ ბრუნვა აღემატება 100,000 ლარს. დღგ-ით დაბეგვრის ობიექტია საქართველოს ტერიტორიაზე საქონლის მიწოდება, მომსახურების გაწევა და საქართველოში საქონლის იმპორტი.",
             metadata={"source": "საგადასახადო_კოდექსი_მუხლი_157.txt"}
@@ -34,7 +35,6 @@ def load_local_documents():
             metadata={"source": "საბაჟო_ადმინისტრირება.txt"}
         ),
     ]
-    return docs
 
 # ========================
 # 2. RAG სისტემა
@@ -46,10 +46,11 @@ def setup_rag():
     )
 
     raw_docs = load_local_documents()
-    text_splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=30)
-    split_docs = text_splitter.split_documents(raw_docs)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=30)
+    split_docs = splitter.split_documents(raw_docs)
 
     vectorstore = FAISS.from_documents(split_docs, embeddings)
+    retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
 
     llm = ChatGroq(
         groq_api_key=GROQ_API_KEY,
@@ -57,43 +58,43 @@ def setup_rag():
         temperature=0
     )
 
-    template = """შენ ხარ საგადასახადო/საბაჟო ასისტენტი. უპასუხე კითხვას მხოლოდ კონტექსტზე დაყრდნობით ქართულ ენაზე.
+    prompt = PromptTemplate.from_template("""შენ ხარ საგადასახადო/საბაჟო ასისტენტი. უპასუხე კითხვას მხოლოდ კონტექსტზე დაყრდნობით ქართულ ენაზე.
 
 კონტექსტი: {context}
 
 კითხვა: {question}
 
 პასუხი ჩამოაყალიბე გარკვევით. ბოლოში აუცილებლად მიუთითე:
-1. კონკრეტული ფაილი, საიდანაც არის ინფორმაცია (📄 წყარო: ...)
-2. სავალდებულო ტექსტი: "ℹ️ პასუხი მომზადებულია საინფორმაციო და მეთოდოლოგიური ჰაბზე განთავსებული დოკუმენტების მიხედვით — https://infohub.rs.ge/ka"
-"""
+წყარო: შესაბამისი ფაილის სახელი
+პასუხი მომზადებულია RS InfoHub-ის დოკუმენტების მიხედვით - https://infohub.rs.ge/ka""")
 
-    prompt = PromptTemplate(template=template, input_variables=["context", "question"])
+    def format_docs(docs):
+        return "\n\n".join(f"[{d.metadata['source']}]\n{d.page_content}" for d in docs)
 
-    return RetrievalQA.from_chain_type(
-        llm=llm,
-        chain_type="stuff",
-        retriever=vectorstore.as_retriever(),
-        return_source_documents=True,
-        chain_type_kwargs={"prompt": prompt}
+    chain = (
+        {"context": retriever | format_docs, "question": RunnablePassthrough()}
+        | prompt
+        | llm
+        | StrOutputParser()
     )
+
+    return chain, retriever
 
 # ========================
 # 3. UI
 # ========================
-st.title("🇬🇪 RS InfoHub — RAG აგენტი")
+st.title("RS InfoHub - RAG აგენტი")
 st.caption("საგადასახადო და საბაჟო კითხვებზე პასუხი 3 დოკუმენტის საფუძველზე")
 
-with st.expander("📂 გამოყენებული დოკუმენტები"):
+with st.expander("გამოყენებული დოკუმენტები"):
     st.markdown("""
-- 📘 `საგადასახადო_კოდექსი_მუხლი_157.txt` — დღგ-ის განაკვეთი და რეგისტრაცია
-- 📗 `მცირე_ბიზნესის_რეგულაციები.txt` — სტატუსი და ბრუნვის ლიმიტი
-- 📙 `საბაჟო_ადმინისტრირება.txt` — დეკლარირება და პროცედურები
+- საგადასახადო_კოდექსი_მუხლი_157.txt - დღგ-ის განაკვეთი და რეგისტრაცია
+- მცირე_ბიზნესის_რეგულაციები.txt - სტატუსი და ბრუნვის ლიმიტი
+- საბაჟო_ადმინისტრირება.txt - დეკლარირება და პროცედურები
     """)
 
 st.divider()
 
-# Chat history
 if "messages" not in st.session_state:
     st.session_state.messages = []
 
@@ -101,7 +102,6 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-# Input
 user_query = st.chat_input("დასვი კითხვა ქართულად... (მაგ: რა არის დღგ-ს განაკვეთი?)")
 
 if user_query:
@@ -111,16 +111,15 @@ if user_query:
 
     with st.chat_message("assistant"):
         with st.spinner("პასუხი იძებნება..."):
-            rag_chain = setup_rag()
-            result = rag_chain.invoke(user_query)
-            answer = result["result"]
-            source_docs = result["source_documents"]
+            chain, retriever = setup_rag()
+            answer = chain.invoke(user_query)
+            source_docs = retriever.invoke(user_query)
 
         st.markdown(answer)
 
-        with st.expander("🔍 გამოყენებული Chunk-ები"):
+        with st.expander("გამოყენებული Chunk-ები"):
             for doc in source_docs:
-                st.markdown(f"**📄 {doc.metadata['source']}**")
+                st.markdown(f"**{doc.metadata['source']}**")
                 st.caption(doc.page_content)
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
