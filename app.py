@@ -8,14 +8,25 @@ from langchain_core.documents import Document
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 
-# API Key — Streamlit Secrets-იდან
-GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
-
 st.set_page_config(
     page_title="RS InfoHub RAG",
     page_icon="🇬🇪",
     layout="centered"
 )
+
+# ========================
+# API Key validation
+# ========================
+try:
+    GROQ_API_KEY = st.secrets["GROQ_API_KEY"]
+except Exception:
+    st.error("GROQ_API_KEY არ არის დაყენებული Secrets-ში!")
+    st.code('GROQ_API_KEY = "gsk_თქვენი_გასაღები"', language="toml")
+    st.stop()
+
+if not GROQ_API_KEY or not GROQ_API_KEY.startswith("gsk_"):
+    st.error(f"API Key არასწორი ფორმატია. იწყება: '{GROQ_API_KEY[:8]}...'")
+    st.stop()
 
 # ========================
 # 1. დოკუმენტები
@@ -40,7 +51,7 @@ def load_local_documents():
 # 2. RAG სისტემა
 # ========================
 @st.cache_resource
-def setup_rag():
+def setup_rag(_api_key):
     embeddings = HuggingFaceEmbeddings(
         model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
     )
@@ -53,20 +64,19 @@ def setup_rag():
     retriever = vectorstore.as_retriever(search_kwargs={"k": 2})
 
     llm = ChatGroq(
-        groq_api_key=GROQ_API_KEY,
-        model_name="llama3-70b-8192",
-        temperature=0
+        api_key=_api_key,
+        model_name="llama-3.3-70b-versatile",
+        temperature=0,
+        max_tokens=1024,
     )
 
-    prompt = PromptTemplate.from_template("""შენ ხარ საგადასახადო/საბაჟო ასისტენტი. უპასუხე კითხვას მხოლოდ კონტექსტზე დაყრდნობით ქართულ ენაზე.
-
-კონტექსტი: {context}
-
-კითხვა: {question}
-
-პასუხი ჩამოაყალიბე გარკვევით. ბოლოში აუცილებლად მიუთითე:
-წყარო: შესაბამისი ფაილის სახელი
-პასუხი მომზადებულია RS InfoHub-ის დოკუმენტების მიხედვით - https://infohub.rs.ge/ka""")
+    prompt = PromptTemplate.from_template(
+        "შენ ხარ საგადასახადო/საბაჟო ასისტენტი. უპასუხე კითხვას მხოლოდ კონტექსტზე დაყრდნობით ქართულ ენაზე.\n\n"
+        "კონტექსტი: {context}\n\n"
+        "კითხვა: {question}\n\n"
+        "პასუხი ჩამოაყალიბე გარკვევით. ბოლოში მიუთითე წყარო და: "
+        "პასუხი მომზადებულია RS InfoHub-ის დოკუმენტების მიხედვით - https://infohub.rs.ge/ka"
+    )
 
     def format_docs(docs):
         return "\n\n".join(f"[{d.metadata['source']}]\n{d.page_content}" for d in docs)
@@ -88,9 +98,9 @@ st.caption("საგადასახადო და საბაჟო კ�
 
 with st.expander("გამოყენებული დოკუმენტები"):
     st.markdown("""
-- საგადასახადო_კოდექსი_მუხლი_157.txt - დღგ-ის განაკვეთი და რეგისტრაცია
-- მცირე_ბიზნესის_რეგულაციები.txt - სტატუსი და ბრუნვის ლიმიტი
-- საბაჟო_ადმინისტრირება.txt - დეკლარირება და პროცედურები
+- `საგადასახადო_კოდექსი_მუხლი_157.txt` — დღგ-ის განაკვეთი და რეგისტრაცია
+- `მცირე_ბიზნესის_რეგულაციები.txt` — სტატუსი და ბრუნვის ლიმიტი
+- `საბაჟო_ადმინისტრირება.txt` — დეკლარირება და პროცედურები
     """)
 
 st.divider()
@@ -110,16 +120,20 @@ if user_query:
         st.markdown(user_query)
 
     with st.chat_message("assistant"):
-        with st.spinner("პასუხი იძებნება..."):
-            chain, retriever = setup_rag()
-            answer = chain.invoke(user_query)
-            source_docs = retriever.invoke(user_query)
+        try:
+            with st.spinner("პასუხი იძებნება..."):
+                chain, retriever = setup_rag(GROQ_API_KEY)
+                answer = chain.invoke(user_query)
+                source_docs = retriever.invoke(user_query)
 
-        st.markdown(answer)
+            st.markdown(answer)
 
-        with st.expander("გამოყენებული Chunk-ები"):
-            for doc in source_docs:
-                st.markdown(f"**{doc.metadata['source']}**")
-                st.caption(doc.page_content)
+            with st.expander("გამოყენებული Chunk-ები"):
+                for doc in source_docs:
+                    st.markdown(f"**{doc.metadata['source']}**")
+                    st.caption(doc.page_content)
+
+        except Exception as e:
+            st.error(f"შეცდომა: {str(e)}")
 
     st.session_state.messages.append({"role": "assistant", "content": answer})
